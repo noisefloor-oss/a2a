@@ -1,0 +1,76 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Candidate version (build and package only; never publish)
+        required: true
+        type: choice
+        options: ['0.1.0']
+        default: '0.1.0'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.repository == 'noisefloor-oss/a2a'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Ensure PyNaCl
+        run: |
+          if ! python3 -c 'import nacl' 2>/dev/null; then
+            sudo apt-get update
+            sudo apt-get install --yes --no-install-recommends python3-nacl
+          fi
+      - name: Test
+        run: python3 -B -m unittest -v test_a2a.py
+      - name: Validate version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          CANDIDATE_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            test "$CANDIDATE_VERSION" = 0.1.0
+            version="$CANDIDATE_VERSION"
+          else
+            [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || exit 1
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          printf 'RELEASE_VERSION=%s\n' "$version" >> "$GITHUB_ENV"
+      - name: Package and smoke-test
+        run: ./scripts/package-release.sh "$RELEASE_VERSION" "$GITHUB_WORKSPACE/release"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: a2a-release
+          path: release/
+          if-no-files-found: error
+
+  publish:
+    if: github.repository == 'noisefloor-oss/a2a' && github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: a2a-release
+          path: release
+      - name: Publish artifact and checksum
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag \
+              --title "a2a ${GITHUB_REF_NAME#v}" \
+              --notes-file release/RELEASE-NOTES.md
+          fi
+          gh release upload "$GITHUB_REF_NAME" release/a2a release/SHA256SUMS --clobber

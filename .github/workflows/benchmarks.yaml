@@ -1,0 +1,35 @@
+name: Benchmarks
+
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+jobs:
+  bench:
+    # Self-hosted like the sibling noise repos (private repository:
+    # GitHub-hosted runner jobs fail instantly on billing). Schedule and
+    # dispatch only — no pull_request events, so no fork rejection needed.
+    runs-on: [self-hosted, Linux, ARM64]
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Ensure PyNaCl on the runner interpreter
+        run: |
+          if ! python3 -c 'import nacl' 2>/dev/null; then
+            sudo apt-get update
+            sudo apt-get install --yes --no-install-recommends python3-nacl
+          fi
+          python3 -c 'import nacl; print("pynacl", nacl.__version__)'
+      # Timing assertions run on a quiet scheduled runner, not per pull
+      # request; the deterministic page-count expectations live in bench.py
+      # either way, and --json keeps the numbers as an artifact.
+      - name: Run the benchmark suite
+        run: python3 -B bench.py --json > benchmarks.json
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: benchmarks
+          path: benchmarks.json

@@ -1,0 +1,72 @@
+name: review-gate
+
+# Cross-model review (SDLC.md merge gate): the latest review by
+# noise-review[bot] on the CURRENT head commit must be APPROVED. Separate
+# workflow from sdlc.yaml so a pull_request_review event never produces
+# skipped/no-op runs of the validation jobs. The different-model part is a
+# human/account-level property; this enforces the checkable half.
+#
+# Review events ONLY, deliberately. A push cannot carry an approval of
+# itself, so running on `pull_request` reported a red check for every new
+# head — "failed" for a gate that had merely not been asked yet, which is
+# indistinguishable at a glance from a real breakage and trained a reflex
+# of re-running red checks. With review events alone the context simply
+# does not report until a verdict exists, and the required check shows
+# "expected — waiting", which is what is actually true. Safety is
+# unchanged: a required check that never reports blocks the merge, and a
+# push after an approval leaves the new head with no report at all (the
+# approval was for the old SHA), so it blocks exactly as before. Do NOT
+# "fix" this by adding a pull_request trigger that exits 0 when no review
+# exists yet, and do NOT gate the job with an `if:` — a skipped job can
+# satisfy a required check, which would open the gate entirely.
+
+on:
+  pull_request_review:
+    types: [submitted, dismissed]
+
+permissions:
+  contents: read
+
+jobs:
+  review-gate:
+    runs-on: [self-hosted, Linux, ARM64]
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+      HEAD: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Require current-head noise-review approval
+        # shell: bash runs with -e -o pipefail: a gh api --paginate
+        # failure after a partial page must fail the step, never let the
+        # gate approve from an incomplete review history.
+        shell: bash
+        run: |
+          # Bind to the verdict body's "Reviewed head: <sha>" marker, not
+          # the review's commit_id alone: GitHub reassociates reviews with
+          # newer heads after a merge-up, so commit_id can be current while
+          # the verdict was written against an older head. The marker is
+          # matched as a complete line by equality — a marker merely quoted
+          # in findings text, or with trailing characters, does not count —
+          # and the LATEST bot review naming this head decides, whatever
+          # its state: a later CHANGES_REQUESTED or DISMISSED verdict
+          # overrides an earlier approval. A head with no such review, or
+          # a malformed marker, fails closed as "none".
+          # (gh api rejects --slurp combined with --jq, and --paginate with
+          # --jq alone filters per page — so pipe the concatenated page
+          # arrays through jq -s and flatten before picking the latest.)
+          latest=$(gh api "repos/$REPO/pulls/$PR/reviews" --paginate | \
+            jq -s --arg head "$HEAD" \
+            '[.[][] | select(.user.login=="noise-review[bot]"
+                             and ((.body // "") | gsub("\r"; "") | split("\n") | index("Reviewed head: " + $head) != null))]
+             | sort_by(.submitted_at) | last | .state // "none"' | \
+            tr -d '"')
+          if [ "$latest" != "APPROVED" ]; then
+            echo "latest noise-review[bot] APPROVED verdict naming head $HEAD: $latest — the cross-model review gate has not passed"
+            echo "(a verdict of 'none' means this head has not been reviewed — or the verdict lacks a current Reviewed head marker —: dispatch a review round against it)"
+            exit 1
+          fi
+          echo "noise-review[bot] approved head $HEAD"

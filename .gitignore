@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+# Deck Assets scratch (local exports for the person, never tracked).
+.deck/

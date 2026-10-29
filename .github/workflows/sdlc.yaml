@@ -1,0 +1,152 @@
+name: sdlc
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, synchronize, reopened]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  pr-title:
+    # PR title becomes the squash-commit message: Conventional Commits
+    # with a required scope from the fixed set (SDLC.md). PR-only: on
+    # push there is no title to check.
+    if: github.event_name == 'pull_request'
+    runs-on: [self-hosted, Linux, ARM64]
+    steps:
+      - name: Reject external fork source on persistent runners
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "Import this change into a same-repository branch before running self-hosted CI." >&2
+          exit 1
+      - name: Validate PR title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          pattern='^(feat|fix|refactor|test|docs|chore|ci)\((chat|keys|ledger|relay|cli|bench|docs|ci|sdlc|tasks)\): .{8,}$'
+          if ! echo "$TITLE" | grep -qE "$pattern"; then
+            echo "PR title must be '<type>(<scope>): <specific change>'"
+            echo "  types: feat fix refactor test docs chore ci"
+            echo "  scopes: chat keys ledger relay cli bench docs ci sdlc tasks"
+            echo "  got: $TITLE"
+            exit 1
+          fi
+          echo "title ok: $TITLE"
+
+  attribution-scan:
+    # No AI-generation attribution, no Co-Authored-By trailers, no tool
+    # watermarks — in PR title, body, or any commit message (SDLC.md).
+    runs-on: [self-hosted, Linux, ARM64]
+    steps:
+      - name: Reject external fork source on persistent runners
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "Import this change into a same-repository branch before running self-hosted CI." >&2
+          exit 1
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify squash message policy
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          policy=$(gh api graphql -f query='query($owner:String!,$name:String!) { repository(owner:$owner,name:$name) { squashMergeCommitTitle squashMergeCommitMessage } }' -f owner="${REPO%/*}" -f name="${REPO#*/}" --jq '.data.repository.squashMergeCommitTitle + " " + .data.repository.squashMergeCommitMessage')
+          if [ "$policy" != "PR_TITLE PR_BODY" ]; then
+            echo "Squash commits must use the PR title/body scanned by this gate (got: $policy)." >&2
+            exit 1
+          fi
+      - name: Scan PR title and body
+        if: github.event_name == 'pull_request'
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          # Title and body on separate lines: attribution trailers begin a
+          # line, and a body first line must be as visible as any other.
+          if { echo "$TITLE"; echo "$BODY"; } | grep -qiE '^co-authored-by:|^generated (with|by)|^assisted by'; then
+            echo "AI attribution found in PR title/body — forbidden (SDLC.md)"
+            exit 1
+          fi
+      - name: Scan commit messages in range
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            range="${{ github.event.pull_request.base.sha }}..HEAD"
+          else
+            before="${{ github.event.before }}"
+            if [ "$before" = "0000000000000000000000000000000000000000" ]; then
+              range=""  # first push: scan the whole history
+            else
+              range="${before}..${{ github.sha }}"
+            fi
+          fi
+          # Unprefixed %B: a trailer in a commit subject must be visible
+          # to the line-anchored pattern.
+          offenders=$(git log --format=%B $range | grep -inE '^co-authored-by:|^generated (with|by)|^assisted by' || true)
+          if [ -n "$offenders" ]; then
+            echo "AI attribution found in commit messages:"
+            echo "$offenders"
+            exit 1
+          fi
+          echo "no attribution in commits"
+
+  secret-scan:
+    # Token and key shapes must never land in the tree.
+    runs-on: [self-hosted, Linux, ARM64]
+    steps:
+      - name: Reject external fork source on persistent runners
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "Import this change into a same-repository branch before running self-hosted CI." >&2
+          exit 1
+      - uses: actions/checkout@v4
+      - name: Scan tree for secret shapes
+        run: |
+          # test_a2a.py is excluded: the suite's own redaction tests carry
+          # synthetic secret-shaped fixtures, imported verbatim from Deck.
+          # Every other file must be clean of real token and key shapes.
+          hits=$(grep -rInE \
+            -e 'gh[pousr]_[A-Za-z0-9]{30,}' \
+            -e 'github[_]pat_[A-Za-z0-9_]{22,}' \
+            -e 'ey[J][A-Za-z0-9_-]{20,}\.' \
+            -e '-----BEGIN [A-Z ]*PRIVATE KEY-----' \
+            --exclude-dir=.git --exclude=test_a2a.py . || true)
+          if [ -n "$hits" ]; then
+            echo "secret-shaped content found:"
+            echo "$hits"
+            exit 1
+          fi
+          echo "tree clean of secret shapes"
+
+  tree-hygiene:
+    # Build output, caches, local-only Deck assets, review scratch, and
+    # env files never land via the PR diff (gitignore can be bypassed
+    # with -f; this can't). PR-only: a main push already passed this
+    # gate as a PR.
+    if: github.event_name == 'pull_request'
+    runs-on: [self-hosted, Linux, ARM64]
+    steps:
+      - name: Reject external fork source on persistent runners
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "Import this change into a same-repository branch before running self-hosted CI." >&2
+          exit 1
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Guard forbidden paths in diff
+        run: |
+          forbidden=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD" | \
+            grep -E '(^|/)(\.deck/|\.review/|__pycache__/|\.env(\..+)?)|\.pyc$' | \
+            grep -vE '(^|/)\.env\.(example|sample)$' || true)
+          if [ -n "$forbidden" ]; then
+            echo "forbidden paths in PR diff:"
+            echo "$forbidden"
+            exit 1
+          fi
+          echo "diff paths clean"

@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    # Self-hosted like the sibling noise repos: this repository is private,
+    # so GitHub-hosted runner jobs fail instantly on billing. Persistent
+    # runner, so fork sources are rejected before any job step runs.
+    runs-on: [self-hosted, Linux, ARM64]
+    timeout-minutes: 30
+    steps:
+      - name: Reject external fork source on persistent runners
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "Import this change into a same-repository branch before running self-hosted CI." >&2
+          exit 1
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Ensure PyNaCl on the runner interpreter
+        run: |
+          if ! python3 -c 'import nacl' 2>/dev/null; then
+            sudo apt-get update
+            sudo apt-get install --yes --no-install-recommends python3-nacl
+          fi
+          python3 -c 'import nacl; print("pynacl", nacl.__version__)'
+      - name: Run the suite
+        run: python3 -B -m unittest -v test_a2a.py
