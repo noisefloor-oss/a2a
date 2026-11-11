@@ -5,18 +5,20 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
-    # Self-hosted like the sibling noise repos: this repository is private,
-    # so GitHub-hosted runner jobs fail instantly on billing. Persistent
-    # runner, so fork sources are rejected before any job step runs.
-    runs-on: [self-hosted, Linux, ARM64]
+    # Standard hosted ARM64 validation; external fork admission stays explicit.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     steps:
-      - name: Reject external fork source on persistent runners
+      - name: Reject unadmitted external fork source
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
         run: |
-          echo "Import this change into a same-repository branch before running self-hosted CI." >&2
+          echo "Import this change into a same-repository branch before CI certification." >&2
           exit 1
       - name: Check out source
         uses: actions/checkout@v4
