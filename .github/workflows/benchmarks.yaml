@@ -5,12 +5,15 @@ on:
     - cron: "17 4 * * 1"
   workflow_dispatch:
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   bench:
-    # Self-hosted like the sibling noise repos (private repository:
-    # GitHub-hosted runner jobs fail instantly on billing). Schedule and
-    # dispatch only — no pull_request events, so no fork rejection needed.
-    runs-on: [self-hosted, Linux, ARM64]
+    # Isolated hosted ARM64 benchmark VM. Schedule and dispatch only;
+    # benchmark thresholds and artifacts remain unchanged.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     steps:
       - name: Check out source

@@ -132,8 +132,6 @@ schedule and on demand and uploads `benchmarks.json` — timing assertions
 belong there, on a quiet scheduled runner, never per pull request. The
 `sdlc` workflow carries the PR-title, attribution, secret, and tree-hygiene
 gates; the `review-gate` workflow enforces the current-head
-`noise-review[bot]` approval. Like the sibling noise repositories, all
-workflows run on the org's persistent self-hosted Linux ARM64 runners (the
-repository is private, so GitHub-hosted runner jobs fail instantly on
-billing), which is why every pull-request job rejects external fork
-sources before any step runs.
+`noise-review[bot]` approval. All workflows use GitHub-hosted Ubuntu 24.04 ARM64 runners.
+External fork sources still require admission before certification.
+Benchmarks retain their thresholds and result artifacts.
