@@ -7342,7 +7342,7 @@ class Presentation(unittest.TestCase):
             env = {"PATH": os.defpath, "HOME": root, "A2A_STATE_DIR": root + "/state", "A2A_MCP_URL": "http://127.0.0.1:1/mcp"}
             result = subprocess.run([sys.executable, a2a.__file__, "--version"], env=env, capture_output=True, text=True, timeout=5)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout, "a2a 0.2.1\n")
+            self.assertEqual(result.stdout, "a2a 0.2.2\n")
             self.assertEqual(result.stderr, "")
             self.assertEqual(list(Path(root).iterdir()), [])
 
