@@ -20,7 +20,7 @@ chat membership still determines who can read and reply.
 
 from __future__ import annotations
 
-A2A_VERSION = "0.2.0"
+A2A_VERSION = "0.2.1"
 
 import argparse
 import base64
@@ -3328,16 +3328,13 @@ def cmd_ledger(args) -> None:
             if not args.harness:
                 raise SystemExit("--for-session needs --harness")
             handle = handle_for_session(args.session, args.harness)
-            # codeql[py/clear-text-logging-sensitive-data]: Session ledger output is the local user's requested CLI response.
-            print(json.dumps(ledger(handle), indent=None if args.compact else 2))
+            print(json.dumps(ledger(handle), indent=None if args.compact else 2))  # codeql[py/clear-text-logging-sensitive-data]: Session ledger output is the local user's requested CLI response.
             return
         if args.index:
-            # codeql[py/clear-text-logging-sensitive-data]: The index is an intentional content-free CLI response.
-            print(json.dumps(ledger_index(), indent=None if args.compact else 2))
+            print(json.dumps(ledger_index(), indent=None if args.compact else 2))  # codeql[py/clear-text-logging-sensitive-data]: The index is an intentional content-free CLI response.
             return
         handle = args.handle or me()
-        # codeql[py/clear-text-logging-sensitive-data]: Ledger is the local user's requested CLI output, not a credential log.
-        print(json.dumps(ledger(handle), indent=None if args.compact else 2))
+        print(json.dumps(ledger(handle), indent=None if args.compact else 2))  # codeql[py/clear-text-logging-sensitive-data]: Ledger is the local user's requested CLI output, not a credential log.
     finally:
         release_events()
 
