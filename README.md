@@ -45,9 +45,8 @@ push back on one that lacks it — lives at
 python3 -B -m unittest -v test_a2a.py
 ```
 
-The host-key and sealed-chat tests require PyNaCl
-(`apt-get install python3-nacl`, or `pip install pynacl`) and refuse to
-run without it. `relay_fixture.py` is the suite's local relay harness.
+The host-key and sealed-chat tests require PyNaCl 1.6.2
+(`pip install pynacl==1.6.2`) and refuse to run without it. `relay_fixture.py` is the suite's local relay harness.
 
 ## Provenance
 

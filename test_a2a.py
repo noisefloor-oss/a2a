@@ -2766,6 +2766,41 @@ class A2ATest(A2ACase):
             second = self.run_cli("bob", "hook", "stop", "--harness", "claude")
         self.assertEqual(second, "")
 
+    def test_claude_stop_hook_retries_unacknowledged_mail(self):
+        self.online("alice", "bob")
+        self.run_cli("alice", "chat", "bob", "urgent")
+        with mock.patch.object(a2a, "ack", side_effect=a2a.LogstreamError("relay down")):
+            out, err, code = self.run_kimi_hook("bob", "stop", harness="claude")
+        self.assertEqual((code, err), (0, ""), "a failed acknowledgement never replaces the block decision")
+        self.assertEqual(json.loads(out)["decision"], "block")
+        self.assertIn("urgent", json.loads(out)["reason"])
+        with self.as_agent("bob"):
+            self.assertEqual(len(a2a.unread()), 1, "un-acked: still unread")
+            self.assertEqual(a2a.read_state("nudges.json"), {}, "un-acked: eligible to block again")
+        out, err, code = self.run_kimi_hook("bob", "stop", harness="claude")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(json.loads(out)["decision"], "block", "the next stop shows the same message again")
+
+    def test_claude_stop_hook_survives_cursor_failure_after_delivery(self):
+        self.online("alice", "bob")
+        self.run_cli("alice", "chat", "bob", "urgent")
+        with mock.patch.object(a2a, "advance_cursor", side_effect=a2a.LogstreamError("relay down")):
+            out, err, code = self.run_kimi_hook("bob", "stop", harness="claude")
+        self.assertEqual((code, err), (0, ""), "a cursor failure never discards the block decision")
+        self.assertEqual(json.loads(out)["decision"], "block")
+        self.assertEqual(len([e for e in self.ls.events if e["type"] == "event.ack"]), 1, "the ack the message earned is published")
+        out, err, code = self.run_kimi_hook("bob", "stop", harness="claude")
+        self.assertEqual((code, out, err), (0, "", ""), "acked and delivered: no second block")
+
+    def test_claude_stop_hook_survives_bookkeeping_write_failures(self):
+        self.online("alice", "bob")
+        self.run_cli("alice", "chat", "bob", "urgent")
+        with mock.patch.object(a2a, "write_state", side_effect=OSError(28, "No space left on device")):
+            out, err, code = self.run_kimi_hook("bob", "stop", harness="claude")
+        self.assertEqual((code, err), (0, ""), "a filesystem failure never replaces the block decision")
+        self.assertEqual(json.loads(out)["decision"], "block")
+        self.assertIn("urgent", json.loads(out)["reason"])
+
     def run_kimi_hook(self, handle: str, event: str, payload: str = "{}", harness: str = "kimi") -> tuple[str, str, int]:
         out, err = io.StringIO(), io.StringIO()
         code = 0
@@ -7307,7 +7342,7 @@ class Presentation(unittest.TestCase):
             env = {"PATH": os.defpath, "HOME": root, "A2A_STATE_DIR": root + "/state", "A2A_MCP_URL": "http://127.0.0.1:1/mcp"}
             result = subprocess.run([sys.executable, a2a.__file__, "--version"], env=env, capture_output=True, text=True, timeout=5)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout, "a2a 0.1.0\n")
+            self.assertEqual(result.stdout, "a2a 0.2.0\n")
             self.assertEqual(result.stderr, "")
             self.assertEqual(list(Path(root).iterdir()), [])
 

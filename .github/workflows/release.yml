@@ -9,8 +9,8 @@ on:
         description: Candidate version (build and package only; never publish)
         required: true
         type: choice
-        options: ['0.1.0']
-        default: '0.1.0'
+        options: ['0.2.0']
+        default: '0.2.0'
 
 permissions:
   contents: read
@@ -25,10 +25,13 @@ jobs:
           persist-credentials: false
       - name: Ensure PyNaCl
         run: |
-          if ! python3 -c 'import nacl' 2>/dev/null; then
-            sudo apt-get update
-            sudo apt-get install --yes --no-install-recommends python3-nacl
+          if ! python3 -c 'import nacl; assert nacl.__version__ == "1.6.2"' 2>/dev/null; then
+            python3 -m venv "$RUNNER_TEMP/a2a-venv"
+            "$RUNNER_TEMP/a2a-venv/bin/python" -m pip install --no-cache-dir pynacl==1.6.2
+            echo "$RUNNER_TEMP/a2a-venv/bin" >> "$GITHUB_PATH"
+            export PATH="$RUNNER_TEMP/a2a-venv/bin:$PATH"
           fi
+          python3 -c 'import nacl; assert nacl.__version__ == "1.6.2"; print("pynacl", nacl.__version__)'
       - name: Test
         run: python3 -B -m unittest -v test_a2a.py
       - name: Validate version
@@ -37,7 +40,7 @@ jobs:
           CANDIDATE_VERSION: ${{ inputs.version }}
         run: |
           if [ "$EVENT_NAME" = workflow_dispatch ]; then
-            test "$CANDIDATE_VERSION" = 0.1.0
+            test "$CANDIDATE_VERSION" = 0.2.0
             version="$CANDIDATE_VERSION"
           else
             [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || exit 1

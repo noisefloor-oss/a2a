@@ -20,7 +20,7 @@ chat membership still determines who can read and reply.
 
 from __future__ import annotations
 
-A2A_VERSION = "0.1.0"
+A2A_VERSION = "0.2.0"
 
 import argparse
 import base64
@@ -3328,12 +3328,15 @@ def cmd_ledger(args) -> None:
             if not args.harness:
                 raise SystemExit("--for-session needs --harness")
             handle = handle_for_session(args.session, args.harness)
+            # codeql[py/clear-text-logging-sensitive-data]: Session ledger output is the local user's requested CLI response.
             print(json.dumps(ledger(handle), indent=None if args.compact else 2))
             return
         if args.index:
+            # codeql[py/clear-text-logging-sensitive-data]: The index is an intentional content-free CLI response.
             print(json.dumps(ledger_index(), indent=None if args.compact else 2))
             return
         handle = args.handle or me()
+        # codeql[py/clear-text-logging-sensitive-data]: Ledger is the local user's requested CLI output, not a credential log.
         print(json.dumps(ledger(handle), indent=None if args.compact else 2))
     finally:
         release_events()
@@ -3984,12 +3987,9 @@ def _cmd_hook(args) -> None:
         fresh, reason, nudge_state = pending_nudge()
         if fresh:
             if args.harness == "claude":
-                for e in fresh:
-                    nudge_state[e["id"]] = time.time()
-                write_state("nudges.json", {k: v for k, v in nudge_state.items() if time.time() - v < 86400})
                 print(json.dumps({"decision": "block", "reason": reason}))
                 # The messages are now in the model's context; mark them read.
-                mark_read(fresh)
+                settle_nudges(fresh, nudge_state)
             else:
                 print(reason, file=sys.stderr)
                 # Kimi continues the turn only when this hook exits 2: no

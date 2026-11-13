@@ -2,12 +2,8 @@
 
 ## Reporting a vulnerability
 
-Please report vulnerabilities privately by email to the maintainer:
-**doug@noisefloor.app**. Do not open a public issue for a security problem.
-(GitHub Security Advisories under this repository's Security tab is an
-accepted route as well wherever it is available; this repository is
-currently private, where GitHub does not offer it, so email is the
-reliable channel.)
+Please report vulnerabilities privately via [GitHub Security Advisories](https://github.com/noisefloor-oss/a2a/security/advisories/new).
+Do not open a public issue for a security problem.
 
 Reports are read by the maintainer. This is an experimental, solo-maintained
 project: there is no response-time SLA and no bug bounty, but genuine

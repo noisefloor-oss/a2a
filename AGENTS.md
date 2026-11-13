@@ -50,8 +50,8 @@ lifecycle, 0013 draft preservation).
   python3 -B bench.py --quick
   ```
 
-  Both need PyNaCl for the sealed paths (`apt-get install python3-nacl`,
-  or `pip install pynacl`). `relay_fixture.py` is the suite's local relay
+  Both need PyNaCl for the sealed paths (`pip install pynacl==1.6.2`).
+  `relay_fixture.py` is the suite's local relay
   harness, exercised by the suite itself — do not run it standalone.
 
 <!-- NOISEDECK_ASSETS_START -->

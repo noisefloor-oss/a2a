@@ -10,18 +10,23 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   pr-title:
     # PR title becomes the squash-commit message: Conventional Commits
     # with a required scope from the fixed set (SDLC.md). PR-only: on
     # push there is no title to check.
     if: github.event_name == 'pull_request'
-    runs-on: [self-hosted, Linux, ARM64]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
     steps:
-      - name: Reject external fork source on persistent runners
+      - name: Reject unadmitted external fork source
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
         run: |
-          echo "Import this change into a same-repository branch before running self-hosted CI." >&2
+          echo "Import this change into a same-repository branch before CI certification." >&2
           exit 1
       - name: Validate PR title
         env:
@@ -40,12 +45,13 @@ jobs:
   attribution-scan:
     # No AI-generation attribution, no Co-Authored-By trailers, no tool
     # watermarks — in PR title, body, or any commit message (SDLC.md).
-    runs-on: [self-hosted, Linux, ARM64]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
     steps:
-      - name: Reject external fork source on persistent runners
+      - name: Reject unadmitted external fork source
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
         run: |
-          echo "Import this change into a same-repository branch before running self-hosted CI." >&2
+          echo "Import this change into a same-repository branch before CI certification." >&2
           exit 1
       - uses: actions/checkout@v4
         with:
@@ -97,12 +103,13 @@ jobs:
 
   secret-scan:
     # Token and key shapes must never land in the tree.
-    runs-on: [self-hosted, Linux, ARM64]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
     steps:
-      - name: Reject external fork source on persistent runners
+      - name: Reject unadmitted external fork source
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
         run: |
-          echo "Import this change into a same-repository branch before running self-hosted CI." >&2
+          echo "Import this change into a same-repository branch before CI certification." >&2
           exit 1
       - uses: actions/checkout@v4
       - name: Scan tree for secret shapes
@@ -129,12 +136,13 @@ jobs:
     # with -f; this can't). PR-only: a main push already passed this
     # gate as a PR.
     if: github.event_name == 'pull_request'
-    runs-on: [self-hosted, Linux, ARM64]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
     steps:
-      - name: Reject external fork source on persistent runners
+      - name: Reject unadmitted external fork source
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
         run: |
-          echo "Import this change into a same-repository branch before running self-hosted CI." >&2
+          echo "Import this change into a same-repository branch before CI certification." >&2
           exit 1
       - uses: actions/checkout@v4
         with:

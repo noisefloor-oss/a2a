@@ -5,23 +5,28 @@ on:
     - cron: "17 4 * * 1"
   workflow_dispatch:
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   bench:
-    # Self-hosted like the sibling noise repos (private repository:
-    # GitHub-hosted runner jobs fail instantly on billing). Schedule and
-    # dispatch only — no pull_request events, so no fork rejection needed.
-    runs-on: [self-hosted, Linux, ARM64]
+    # Isolated hosted ARM64 benchmark VM. Schedule and dispatch only;
+    # benchmark thresholds and artifacts remain unchanged.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     steps:
       - name: Check out source
         uses: actions/checkout@v4
       - name: Ensure PyNaCl on the runner interpreter
         run: |
-          if ! python3 -c 'import nacl' 2>/dev/null; then
-            sudo apt-get update
-            sudo apt-get install --yes --no-install-recommends python3-nacl
+          if ! python3 -c 'import nacl; assert nacl.__version__ == "1.6.2"' 2>/dev/null; then
+            python3 -m venv "$RUNNER_TEMP/a2a-venv"
+            "$RUNNER_TEMP/a2a-venv/bin/python" -m pip install --no-cache-dir pynacl==1.6.2
+            echo "$RUNNER_TEMP/a2a-venv/bin" >> "$GITHUB_PATH"
+            export PATH="$RUNNER_TEMP/a2a-venv/bin:$PATH"
           fi
-          python3 -c 'import nacl; print("pynacl", nacl.__version__)'
+          python3 -c 'import nacl; assert nacl.__version__ == "1.6.2"; print("pynacl", nacl.__version__)'
       # Timing assertions run on a quiet scheduled runner, not per pull
       # request; the deterministic page-count expectations live in bench.py
       # either way, and --json keeps the numbers as an artifact.
