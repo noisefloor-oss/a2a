@@ -2437,6 +2437,7 @@ def unreadable_events(chat_id: str | None = None, chats: dict[str, dict] | None 
     fact a reader sees, not a silence."""
     verified, _, _ = verified_chats(chat_id)
     accepted = {e["id"] for e in verified}
+    scopes = scope_index(verified)
     filters = {"room": ROOM_CHAT}
     if chat_id:
         filters["correlation_id"] = chat_id
@@ -2460,6 +2461,13 @@ def unreadable_events(chat_id: str | None = None, chats: dict[str, dict] | None 
                 continue
         inner, why, sender_host, _ = open_inner(e)
         if why is None:
+            if scope_key(scope_of(e)) in scopes:
+                # A copy of a folded box is the event it claims to be only
+                # once the box itself verifies: the scope fields come from
+                # the relay row, so a damaged or edited copy that still
+                # quotes a folded box's envelope is reported, not taken for
+                # the original.
+                continue
             after = inner.get("after") or []
             why = (f"the box opens, but an event it follows ({', '.join(after[:4])}) is not here yet, or its sender is not placed in this chat" if after else "the box opens, but its sender is not placed in this chat") + (f" (sealed by {sender_host})" if sender_host else "")
         out.append({"id": e["id"], "chat": handle_text(cid), "from": handle_text(e.get("from_agent")), "type": e["type"], "at": e.get("created_at"), "reason": inert(why)[:REASON_CHARS], "untrusted": True})
@@ -3713,6 +3721,7 @@ def cmd_inbox(args) -> None:
 
 def _wait(chat_id: str | None, timeout_s: float) -> list[dict]:
     deadline = time.monotonic() + timeout_s
+    backoff_s = max(0.0, float(os.environ.get("A2A_WAIT_BACKOFF_S") or 1))
     durable = read_state(inbox_cursor_name()).get("cursor")
     scan = durable  # moves over traffic that is not mine; the durable cursor does not
     while True:
@@ -3727,16 +3736,30 @@ def _wait(chat_id: str | None, timeout_s: float) -> list[dict]:
         filters = {}
         if scan:
             filters["since_event_id"] = scan
-        arrived = wait_events(int(min(remaining, 300) * 1000), **filters)
-        if arrived:
-            scan = arrived[-1]["id"]
-            if any(e.get("room") in (ROOM_PRESENCE, ROOM_KEYS) for e in arrived):
+        try:
+            arrived = wait_events(int(min(remaining, 300) * 1000), **filters)
+            if arrived and any(e.get("room") in (ROOM_PRESENCE, ROOM_KEYS) for e in arrived):
                 # A dependency arrived: what is placed and which keys are
                 # known is read again, not taken from a cache.
                 _HOSTS_CACHE.update(at=0.0)
                 _PUBLIC_KEYS_CACHE.update(at=0.0)
-        chats = my_chats()
-        events = [e for e in unread(durable, chat_id) if me() not in chats[e["correlation_id"]]["left"]]
+            chats = my_chats()
+            events = [e for e in unread(durable, chat_id) if me() not in chats[e["correlation_id"]]["left"]]
+        except LogstreamError as exc:
+            # The same policy the follower keeps: a refused cursor is a
+            # reset palace — rescan from the whole stream; anything else is
+            # downtime — pause within the deadline, keep the state, try
+            # again. A blip costs a cycle, never the command.
+            if _cursor_refused(exc):
+                scan = None
+                continue
+            time.sleep(min(backoff_s, max(0.0, deadline - time.monotonic())))
+            continue
+        # The scan commits only once the read it woke succeeded: a failed
+        # listing retries from the same cursor rather than waiting out the
+        # mail it has not processed yet.
+        if arrived:
+            scan = arrived[-1]["id"]
         if events:
             for e in events:
                 print(human_event(e))
@@ -3791,33 +3814,35 @@ def follow_stream(stop=None, out=None, chat_id: str | None = None) -> None:
         out.write(json.dumps([opened(e) for e in events]) + "\n")
         out.flush()
 
-    emit()  # what arrived while nothing was following is still mail
-    wakes += 1
-    if max_wakes and wakes >= max_wakes:
-        return
+    def faulted(exc: LogstreamError) -> None:
+        """One fault policy for every relay call in the stream, the listing
+        in emit() included: a refused cursor is a reset palace — rescan
+        from the whole stream, which the next wake folds into fresh
+        unread; anything else is downtime — pause, keep the state, try
+        again. Either way a fault costs a cycle, never the stream."""
+        nonlocal scan
+        if _cursor_refused(exc):
+            scan = None
+            return
+        if not stop():
+            time.sleep(backoff_s)
+
     while not stop():
         try:
-            filters = {"since_event_id": scan} if scan else {}
-            arrived = wait_events(int(slice_s * 1000), **filters)
+            if wakes:
+                filters = {"since_event_id": scan} if scan else {}
+                arrived = wait_events(int(slice_s * 1000), **filters)
+                if arrived:
+                    scan = arrived[-1]["id"]
+                    if any(e.get("room") in (ROOM_PRESENCE, ROOM_KEYS) for e in arrived):
+                        # A dependency arrived: what is placed and which keys are
+                        # known is read again, not taken from a cache.
+                        _HOSTS_CACHE.update(at=0.0)
+                        _PUBLIC_KEYS_CACHE.update(at=0.0)
+            emit()  # the first line is what arrived while nothing was following
         except LogstreamError as exc:
-            if _cursor_refused(exc):
-                # A reset palace refuses the cursor: rescan from the whole
-                # stream, which the next wake folds into fresh unread.
-                scan = None
-                continue
-            # Downtime is not a reset: pause, keep the state, try again.
-            if stop():
-                return
-            time.sleep(backoff_s)
+            faulted(exc)
             continue
-        if arrived:
-            scan = arrived[-1]["id"]
-            if any(e.get("room") in (ROOM_PRESENCE, ROOM_KEYS) for e in arrived):
-                # A dependency arrived: what is placed and which keys are
-                # known is read again, not taken from a cache.
-                _HOSTS_CACHE.update(at=0.0)
-                _PUBLIC_KEYS_CACHE.update(at=0.0)
-        emit()
         wakes += 1
         if max_wakes and wakes >= max_wakes:
             return

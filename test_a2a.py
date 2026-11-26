@@ -715,6 +715,30 @@ class FollowStreamTest(A2ACase):
         self.assertEqual(len(lines), 3, "reset and downtime each cost a cycle, not the stream")
         self.assertEqual([e["body"] for e in lines[0]], ["steady"])
 
+    def test_a_failed_listing_costs_a_cycle_not_the_stream(self):
+        """The same faults from emit()'s own listing — at startup or after a
+        wake — take the same policy: the stream keeps its state and tries
+        again rather than dying with the relay."""
+        self.run_cli("alice", "chat", "bob", "steady")
+        refused = a2a.LogstreamError("mempalace_event_list: since_event_id 'evt_dead' not found")
+        down = a2a.LogstreamError("connection refused")
+        real_unread = a2a.unread
+        calls = 0
+
+        def flaky_unread(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise refused  # the startup emit
+            if calls == 3:
+                raise down  # the first post-wake emit
+            return real_unread(*args, **kwargs)
+
+        with mock.patch.object(a2a, "unread", side_effect=flaky_unread):
+            lines = self.follow([[{"id": "x", "room": a2a.ROOM_CHAT}], [], []])
+        self.assertEqual(len(lines), 3, "a failed listing costs a cycle, not the stream")
+        self.assertEqual([e["body"] for e in lines[0]], ["steady"])
+
     def test_parity_with_peek_json(self):
         self.run_cli("alice", "chat", "bob", "parity check")
         lines = self.follow([[{"id": "x", "room": a2a.ROOM_CHAT}], [], []])
@@ -1951,6 +1975,55 @@ class A2ATest(A2ACase):
         unrelated = next(e for e in self.ls.events if a2a.open_body(e)[0] == "not for alice")
         self.assertEqual(calls[1], unrelated["id"], "the first pass moved the scan cursor past the traffic that was not hers")
         self.assertLess(len(calls), 6, "no re-reading of the same event")
+
+    def test_wait_survives_a_reset_and_downtime(self):
+        """The wait keeps the follower's fault policy: a refused cursor
+        rescans from the whole stream, downtime pauses within the
+        deadline, and neither fails the command."""
+        self.online("alice", "bob")
+        self.run_cli("alice", "chat", "bob", "through the outage")
+        refused = a2a.LogstreamError("mempalace_event_wait: since_event_id 'evt_dead' not found")
+        down = a2a.LogstreamError("connection refused")
+        real_wait = a2a.wait_events
+        faults = [refused, down]
+
+        def flaky_wait(timeout_ms, **filters):
+            if faults:
+                raise faults.pop(0)
+            return real_wait(timeout_ms, **filters)
+
+        with mock.patch.dict(os.environ, {"A2A_WAIT_BACKOFF_S": "0"}), mock.patch.object(a2a, "wait_events", side_effect=flaky_wait), self.as_agent("bob"):
+            events = a2a._wait(None, 5)
+        self.assertEqual([a2a.open_body(e)[0] for e in events], ["through the outage"])
+        self.assertEqual(faults, [], "both faults were weathered before the mail arrived")
+
+    def test_wait_commits_the_scan_only_after_the_read_succeeds(self):
+        """A wait that woke for mail but failed its listing does not block
+        on newer traffic: the scan commits once the read it woke for has
+        succeeded, so the retry sees the same wake again."""
+        self.online("alice", "bob")
+        self.run_cli("alice", "chat", "bob", "through the outage")
+        down = a2a.LogstreamError("connection refused")
+        real_unread = a2a.unread
+        faults = [down]
+
+        def flaky_unread(*args, **kwargs):
+            if faults:
+                raise faults.pop(0)
+            return real_unread(*args, **kwargs)
+
+        waits = []
+        real_wait = a2a.wait_events
+
+        def recording_wait(timeout_ms, **filters):
+            waits.append(filters.get("since_event_id"))
+            return real_wait(timeout_ms, **filters)
+
+        with mock.patch.dict(os.environ, {"A2A_WAIT_BACKOFF_S": "0"}), mock.patch.object(a2a, "unread", side_effect=flaky_unread), mock.patch.object(a2a, "wait_events", side_effect=recording_wait), self.as_agent("bob"):
+            events = a2a._wait(None, 5)
+        self.assertEqual([a2a.open_body(e)[0] for e in events], ["through the outage"])
+        self.assertGreaterEqual(len(waits), 2, "the failed listing cost a cycle")
+        self.assertEqual(waits[0], waits[1], "the retry waited from the same cursor, not past the unlisted mail")
 
     def test_delivery_only_writes_to_an_allowed_socket(self):
         self.online("alice")
@@ -5978,6 +6051,43 @@ class SealedAuthorityTest(A2ACase):
         self.assertNotIn("\x1b", out)
         self.assertIn("mallory", out.replace("[2J", ""))
         del junk
+
+    def test_a_verified_replay_is_not_reported_as_unreadable(self):
+        """A relay may present an already-folded sealed box under a new row
+        id. One box is one event, so that copy stays out of the error view."""
+        self.online("alice", "bob")
+        self.run_cli("alice", "chat", "bob", "verified once")
+        with self.as_agent("alice"):
+            cid = a2a.open_chat_with("bob")
+        invite = next(e for e in self.ls.events if e["type"] == "chat.invite")
+        self.ls._append({k: v for k, v in invite.items() if k not in ("id", "seq", "created_at")})
+        self.assertEqual(a2a.unreadable_events(cid), [])
+
+    def test_a_damaged_copy_of_a_verified_box_is_still_reported(self):
+        """A copy under a new row id is the folded event only once the box
+        itself verifies. A copy with a corrupted body, edited routing or a
+        malformed envelope still quotes the folded box's scope, and it is
+        reported, not taken for the original."""
+        self.online("alice", "bob")
+        self.run_cli("alice", "chat", "bob", "verified once")
+        with self.as_agent("alice"):
+            cid = a2a.open_chat_with("bob")
+        invite = next(e for e in self.ls.events if e["type"] == "chat.invite")
+
+        def copy(**edits):
+            dup = {k: v for k, v in invite.items() if k not in ("id", "seq", "created_at")}
+            dup.update(edits)
+            return self.ls._append(dup)
+
+        valid = copy()
+        corrupted = copy(body="AAAA" + invite["body"][4:])
+        rerouted = copy(to_agent="mallory")
+        malformed = copy(metadata={**invite["metadata"], "enc": {**invite["metadata"]["enc"], "nonce": 7}})
+        reported = {u["id"] for u in a2a.unreadable_events(cid)}
+        self.assertNotIn(valid["id"], reported)
+        self.assertIn(corrupted["id"], reported)
+        self.assertIn(rerouted["id"], reported)
+        self.assertIn(malformed["id"], reported)
 
     def test_an_acknowledgement_whose_presence_arrives_late_still_stops_the_courier(self):
         """bob read the invite and acknowledged it; his presence, which
