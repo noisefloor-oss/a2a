@@ -20,7 +20,7 @@ chat membership still determines who can read and reply.
 
 from __future__ import annotations
 
-A2A_VERSION = "0.2.2"
+A2A_VERSION = "0.2.3"
 
 import argparse
 import base64
